@@ -15,7 +15,7 @@
   #screen { position: absolute; background: #000; overflow: hidden; }
   #screen.crt-on { border-radius: 10px; }
   #vid, #gen, #snow, #ytBox { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
-  #ytBox { background: #000; overflow: hidden; } #ytBox iframe { position: absolute; left: 0; top: -7%; width: 100%; height: 114%; border: 0; pointer-events: none; } /* slight 'overscan' hides YouTube's title/logo bars */
+  #ytBox { background: #000; overflow: hidden; } #ytBox iframe { position: absolute; left: 0; top: -7%; width: 100%; height: 107%; border: 0; pointer-events: none; } #ytBox.live iframe { pointer-events: auto; } /* slight 'overscan' hides YouTube's title/logo bars */
   /* subtle SD softness, part of the CRT look */
   #screen.crt-on #vid, #screen.crt-on #ytBox { filter: blur(0.35px) saturate(0.93) contrast(1.03); }
   #vid { object-fit: contain; background: #000; }
@@ -74,6 +74,13 @@
   #volSegs { display: inline-flex; gap: 2px; }
   #volSegs i { display: inline-block; width: calc(var(--u)*0.9); height: calc(var(--u)*2.4); background: #4b3c78; }
   #volSegs i.on { background: var(--cgreen); }
+  #flip, #progInfo { pointer-events: none; } /* info banners never block clicks meant for the picture (e.g. YouTube's Skip Ad button) */
+  #tuneIn { position: absolute; inset: 0; z-index: 49; cursor: pointer; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.25); }
+  #tuneIn .box { position: static; text-align: center; padding: calc(var(--u)*1.6) calc(var(--u)*3.4); font-size: calc(var(--u)*3.6); box-shadow: 0 0 0 calc(var(--u)*0.3) #000; }
+  #tuneIn .box small { display: block; font-size: calc(var(--u)*2.3); font-weight: normal; color: #d9d2f2; margin-top: calc(var(--u)*0.6); }
+  #tuneIn .ok { display: inline-block; background: var(--cgreen); color: #fff; border-radius: 50%; padding: 0 calc(var(--u)*0.9); margin: 0 calc(var(--u)*0.4); }
+  #tuneIn.passive { background: none; pointer-events: none; align-items: flex-start; padding-top: calc(var(--u)*5); }
+  #tuneIn.passive .box { font-size: calc(var(--u)*2.6); }
   #msgOsd { top: 22%; left: 50%; transform: translateX(-50%); font-size: calc(var(--u)*3); padding: calc(var(--u)*0.8) calc(var(--u)*2.4); text-align: center; max-width: 80%; }
 
   /* SARA-style full-screen guide */
@@ -171,6 +178,7 @@
   <div id="muteOsd" class="box hidden">MUTE</div>
   <div id="volOsd" class="box hidden">VOLUME <span id="volSegs"></span> <span id="volNum"></span></div>
   <div id="msgOsd" class="box hidden"></div>
+  <div id="tuneIn" class="hidden"><div class="box"></div></div>
   <div id="crt"></div>
 </div>
 
@@ -319,11 +327,12 @@ function initAudio() {
   applyVolume(); setInterval(musicTick, 25);
   const ch = curCh(); if (ch && started) startChannelAudio(ch);
 }
+let forcedMute = false; // true while the browser only lets us play with the sound off (until the next click/key press)
 function applyVolume() {
   const v = S.muted ? 0 : S.vol / 100;
-  vid.volume = Math.min(1, S.vol / 100); vid.muted = S.muted;
+  vid.volume = Math.min(1, S.vol / 100); vid.muted = S.muted || forcedMute;
   if (master) master.gain.setTargetAtTime(v, AC.currentTime, 0.02);
-  if (typeof YTS !== 'undefined' && YTS.state === 'ready') { try { YTS.player.setVolume(S.vol); S.muted ? YTS.player.mute() : YTS.player.unMute(); } catch (e) {} }
+  if (typeof YTS !== 'undefined' && YTS.state === 'ready') { try { YTS.player.setVolume(S.vol); (S.muted || forcedMute) ? YTS.player.mute() : YTS.player.unMute(); } catch (e) {} }
 }
 function noiseBurst(ms) {
   if (!AC) return;
@@ -785,11 +794,12 @@ function ensureYT() {
   const fail = why => { if (YTS.state === 'ready' || YTS.state === 'failed') return; YTS.state = 'failed'; console.warn('YouTube player unavailable:', why); rebuildAll(); flashMsg('YouTube shows moved to On Demand (player unavailable)', 3500); };
   window.onYouTubeIframeAPIReady = () => {
     YTS.player = new YT.Player('ytInner', { width: '100%', height: '100%', host: 'https://www.youtube.com',
-      playerVars: { autoplay: 1, controls: 0, disablekb: 1, fs: 0, iv_load_policy: 3, modestbranding: 1, rel: 0, playsinline: 1, cc_load_policy: 0, origin: location.origin },
-      events: {
+      playerVars: { autoplay: 1, mute: 0, controls: 0, disablekb: 1, fs: 0, iv_load_policy: 3, modestbranding: 1, rel: 0, playsinline: 1, cc_load_policy: 0, origin: location.origin },
+      events: YTS.events = {
         onReady: () => { YTS.state = 'ready'; applyVolume(); vstate.key = null; syncVideo(); },
-        onStateChange: e => { if (e.data === 0) setTimeout(syncVideo, 50); if (e.data === 1) { vstate.ytPlaying = true; applyView(); } },
-        onError: e => { if (vstate.item && vstate.item.yt) onVideoFail('youtube error ' + e.data); }
+        onStateChange: e => { if (e.data === 0) setTimeout(syncVideo, 50); if (e.data === 1) { vstate.ytPlaying = true; vstate.ytProgAt = performance.now(); hideTuneIn(); applyView(); } },
+        // 2 bad id, 5 HTML5 error, 100 removed/private, 101/150 owner disabled embedding: skip it in the live schedule (it moves to On Demand)
+        onError: e => { if (vstate.item && vstate.item.yt) { const c = e.data; onVideoFail('youtube error ' + c); flashMsg(c === 101 || c === 150 ? 'This show won\'t play inside the TV. It\'s in the Guide under On Demand.' : 'This show is unavailable. Skipping ahead…', 3500); } }
       } });
   };
   const s = document.createElement('script'); s.src = 'https://www.youtube.com/iframe_api'; s.onerror = () => fail('script blocked/offline'); document.head.appendChild(s);
@@ -807,14 +817,15 @@ function startChannelAudio(ch) {
   if (ch.kind === 'guide') startMusic('guide'); else if (ch.kind === 'weather') startMusic('weather'); else if (ch.kind === 'bars') startTone(1000, 0.08);
 }
 function stopHtmlVideo() { vid.onloadedmetadata = null; vid.pause(); if (vid.getAttribute('src')) { vid.removeAttribute('src'); vid.load(); } }
-function stopVideo() { vstate.token++; vstate.key = null; vstate.item = null; stopHtmlVideo(); ytStop(); }
+function stopVideo() { vstate.token++; vstate.key = null; vstate.item = null; stopHtmlVideo(); ytStop(); hideTuneIn(); }
 function applyView() {
   const ch = curCh(); if (!ch) return;
   const isYT = ch.kind === 'video' && vstate.item && vstate.item.yt;
   const audioOnly = ch.kind === 'video' && !isYT && vid.readyState >= 1 && vid.videoWidth === 0 && !!vid.getAttribute('src');
   const showVideo = ch.kind === 'video' && !techActive() && !audioOnly && !isYT;
   const showYT = ch.kind === 'video' && !techActive() && isYT;
-  vid.classList.toggle('hidden', !showVideo); $('ytBox').classList.toggle('hidden', !showYT); gen.classList.toggle('hidden', showVideo || showYT);
+  vid.classList.toggle('hidden', !showVideo); $('ytBox').classList.toggle('hidden', !showYT); $('ytBox').classList.toggle('live', showYT && !!vstate.ytLive);
+  if (!(showVideo || showYT) && !techActive()) hideTuneIn(); gen.classList.toggle('hidden', showVideo || showYT);
 }
 function tuneTo(idx, force) {
   if (!channels.length) return;
@@ -841,7 +852,7 @@ function syncVideo() {
   if (p.item.yt) return syncYT(ch, p);
   if (vstate.item && vstate.item.yt) { ytStop(); }
   if (p.key !== vstate.key || p.item !== vstate.item) {
-    vstate.key = p.key; vstate.item = p.item; const tok = ++vstate.token; vstate.loadAt = performance.now();
+    vstate.key = p.key; vstate.item = p.item; const tok = ++vstate.token; vstate.loadAt = performance.now(); hideTuneIn();
     vid.onloadedmetadata = () => {
       if (tok !== vstate.token) return;
       let q = programAt(curCh(), nowSec()); let off = q.key === p.key ? q.offset : 0;
@@ -854,13 +865,13 @@ function syncVideo() {
       }
       if (isFinite(vid.duration) && off > vid.duration - 0.3) off = Math.max(0, vid.duration - 0.3);
       try { vid.currentTime = off; } catch (e) {}
-      vid.play().catch(() => flashMsg('Click anywhere to start the picture', 3000));
+      playVid();
       applyView();
     };
     vid.src = p.item.url;
   } else if (vid.readyState >= 1 && !vid.seeking) {
     if (p.offset < vid.duration - 1 && Math.abs(vid.currentTime - p.offset) > 3) { try { vid.currentTime = p.offset; } catch (e) {} }
-    if (vid.paused && !vid.ended && document.visibilityState === 'visible') vid.play().catch(() => {});
+    if (vid.paused && !vid.ended && document.visibilityState === 'visible' && !vstate.vidTrying) playVid();
   } else if (vid.readyState < 1) {
     const waited = performance.now() - vstate.loadAt;
     if (waited > 75000) onVideoFail('timeout'); else if (waited > 4000) flashMsg('Please stand by…', 1200); // very long archive files can take ~30s to start
@@ -868,22 +879,79 @@ function syncVideo() {
 }
 function syncYT(ch, p) {
   if (YTS.state === 'failed') { onVideoFail('youtube unavailable'); return; }
-  if (YTS.state !== 'ready') { ensureYT(); return; }
-  const pl = YTS.player;
+  if (YTS.state !== 'ready') { ensureYT(); if (performance.now() - (vstate.loadAt || 0) > 4000) flashMsg('Please stand by…', 1200); return; }
+  const pl = YTS.player, now = performance.now();
   if (p.key !== vstate.key || p.item !== vstate.item) {
     if (!(vstate.item && vstate.item.yt)) stopHtmlVideo();
-    vstate.key = p.key; vstate.item = p.item; vstate.token++; vstate.loadAt = performance.now(); vstate.ytPlaying = false;
-    try { pl.loadVideoById({ videoId: p.item.yt, startSeconds: Math.max(0, p.offset), suggestedQuality: 'large' }); applyVolume(); } catch (e) { onVideoFail('youtube load'); }
+    hideTuneIn();
+    Object.assign(vstate, { key: p.key, item: p.item, loadAt: now, ytPlaying: false, ytLive: false, ytSeeked: false, ytSeekAt: 0, ytSeeks: 0, ytLastCt: -1, ytProgAt: now, ytMutedTry: false, ytKickAt: 0, ytClickPic: false });
+    vstate.token++;
+    try { applyVolume(); pl.loadVideoById({ videoId: p.item.yt, startSeconds: Math.max(0, p.offset), suggestedQuality: 'large' }); } catch (e) { onVideoFail('youtube load'); }
     applyView(); return;
   }
-  let st = -1, ct = 0; try { st = pl.getPlayerState(); ct = pl.getCurrentTime(); } catch (e) {}
-  if (st === 1) {
-    const d = pl.getDuration && pl.getDuration();
-    if (p.item.est && d > 1) { p.item.dur = d; p.item.est = false; saveLineup(); rebuildAll(); vstate.key = null; return; }
-    if (Math.abs(ct - p.offset) > 5 && p.offset < (d || 1e9) - 2) pl.seekTo(p.offset, true);
-  } else if (st === 2 || st === 5) { try { pl.playVideo(); } catch (e) {} }
-  if (!vstate.ytPlaying && performance.now() - vstate.loadAt > 40000) onVideoFail('youtube timeout');
+  let st = -1, ct = 0, d = 0, vid_ = ''; try { st = pl.getPlayerState(); ct = pl.getCurrentTime() || 0; d = pl.getDuration() || 0; vid_ = (pl.getVideoData() || {}).video_id || ''; } catch (e) {}
+  // "progress" = the clock inside the player is moving (the show itself OR a YouTube ad)
+  if (vstate.ytLastCt >= 0 && Math.abs(ct - vstate.ytLastCt) > 0.05) { vstate.ytProgAt = now; if (!vstate.ytLive) { vstate.ytLive = true; hideTuneIn(); applyView(); } }
+  vstate.ytLastCt = ct;
+  const moving = now - vstate.ytProgAt < 2500;
+  // The real show (not an ad): right video id, playing, and a run time that matches the lineup
+  const durOk = !d || (p.item.est ? d > 60 : Math.abs(d - p.item.dur) < Math.max(30, p.item.dur * 0.06));
+  const isShow = st === 1 && (!vid_ || vid_ === p.item.yt) && durOk;
+  if (isShow) {
+    vstate.ytLive = true;
+    if (p.item.est && d > 60) { p.item.dur = d; p.item.est = false; saveLineup(); rebuildAll(); vstate.key = null; return; }
+    const drift = Math.abs(ct - p.offset), canSeek = p.offset < (d || 1e9) - 2;
+    // seek once when the show itself starts (an ad may have delayed it); afterwards only fix big drift, rarely, so we never fight the player
+    if (canSeek && !vstate.ytSeeked && drift > 5) { pl.seekTo(p.offset, true); vstate.ytSeekAt = now; vstate.ytSeeks++; }
+    else if (canSeek && vstate.ytSeeked && drift > 20 && now - vstate.ytSeekAt > 60000 && vstate.ytSeeks < 4) { pl.seekTo(p.offset, true); vstate.ytSeekAt = now; vstate.ytSeeks++; }
+    vstate.ytSeeked = true;
+    if (forcedMute && !S.muted) showTuneIn('sound');
+    return;
+  }
+  if (moving) return; // an ad (or buffering that is still advancing) is playing: leave it alone
+  // Not moving: paused, cued (red play button), unstarted, or buffering
+  const stuckFor = now - vstate.ytProgAt;
+  if ((st === 2 || st === 5 || st === -1) && stuckFor > 2500) {
+    if (!vstate.ytMutedTry) {
+      // the browser blocked autoplay with sound: muted autoplay is always allowed, so start silently and unmute on the next click/key
+      vstate.ytMutedTry = true; if (!S.muted) forcedMute = true;
+      try { pl.mute(); pl.playVideo(); } catch (e) {}
+    } else if (now - vstate.ytKickAt > 4000) { vstate.ytKickAt = now; try { pl.playVideo(); } catch (e) {} }
+    if (stuckFor > 6000) showTuneIn(vstate.ytClickPic ? 'pic' : 'start');
+  }
+  if (!vstate.ytLive && now - vstate.loadAt > 45000 && $('tuneIn').classList.contains('hidden')) onVideoFail('youtube timeout');
 }
+// <video> playback with the same fallback chain: sound on -> muted -> "click to tune in"
+function playVid() {
+  const tok = vstate.token; vstate.vidTrying = true;
+  vid.play().then(() => { vstate.vidTrying = false; hideTuneIn(); }).catch(err => {
+    if (tok !== vstate.token) { vstate.vidTrying = false; return; }
+    if (err && err.name === 'NotAllowedError' && !vid.muted) {
+      forcedMute = true; vid.muted = true;
+      vid.play().then(() => { vstate.vidTrying = false; showTuneIn('sound'); }).catch(() => { vstate.vidTrying = false; showTuneIn('start'); });
+    } else { vstate.vidTrying = false; if (err && err.name === 'NotAllowedError') showTuneIn('start'); }
+  });
+}
+function showTuneIn(kind) {
+  const el = $('tuneIn'); if (guideOpen && guideOpen() && kind === 'sound') return;
+  el.dataset.kind = kind; el.classList.toggle('passive', kind !== 'start');
+  el.firstElementChild.innerHTML = kind === 'sound' ? '🔇 Sound is off. Click or press any key to turn it on.' : kind === 'pic' ? '▶ Click the picture once to start this channel'
+    : '▶ Press <span class="ok">OK</span> or click here to tune in<small>Your browser is waiting for a click before it plays the picture.</small>';
+  el.classList.remove('hidden');
+}
+function hideTuneIn() { const el = $('tuneIn'); if (el) el.classList.add('hidden'); }
+// Called from inside every real click / key press: the moment the browser allows sound and playback.
+function userKick() {
+  const ch = curCh(); const wasStuck = !$('tuneIn').classList.contains('hidden') && $('tuneIn').dataset.kind === 'start';
+  if (forcedMute) { forcedMute = false; applyVolume(); }
+  hideTuneIn();
+  if (!ch || ch.kind !== 'video' || !vstate.item) return;
+  if (vstate.item.yt) {
+    if (YTS.state === 'ready') { try { const st = YTS.player.getPlayerState(); if (st !== 1 && st !== 3) YTS.player.playVideo(); } catch (e) {} }
+    if (wasStuck) { vstate.ytProgAt = performance.now(); vstate.ytMutedTry = false; setTimeout(() => { if (curCh() === ch && vstate.item && vstate.item.yt && performance.now() - vstate.ytProgAt > 2000) { vstate.ytClickPic = true; vstate.ytLive = true; applyView(); showTuneIn('pic'); } }, 2500); }
+  } else if (vid.getAttribute('src') && vid.paused && !vid.ended) { playVid(); }
+}
+$('tuneIn').addEventListener('click', e => { e.stopPropagation(); initAudio(); userKick(); });
 vid.addEventListener('ended', () => setTimeout(syncVideo, 50));
 vid.addEventListener('error', () => { if (vid.getAttribute('src') && vstate.item && !vstate.item.yt && curCh() && curCh().kind === 'video') onVideoFail('error'); });
 function doSnow(ms) { snowUntil = performance.now() + ms; snow.style.display = 'block'; noiseBurst(ms); }
@@ -1002,7 +1070,7 @@ window.addEventListener('resize', applyLayout);
 
 // ---------- Input ----------
 function action(k) {
-  initAudio();
+  initAudio(); if (forcedMute || !$('tuneIn').classList.contains('hidden')) { const stuck = !$('tuneIn').classList.contains('hidden') && $('tuneIn').dataset.kind === 'start'; userKick(); if (stuck && k === 'enter' && !digits) return; }
   const go = guideOpen();
   switch (k) {
     case 'chup': go ? moveSel(-1) : tuneTo(cur + 1); break; case 'chdn': go ? moveSel(1) : tuneTo(cur - 1); break;
@@ -1027,7 +1095,13 @@ document.addEventListener('keydown', e => {
 });
 document.querySelectorAll('#remote .rbtn').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); action(b.dataset.k); b.blur(); }));
 screen.addEventListener('dblclick', toggleFull);
-document.addEventListener('click', () => { initAudio(); if (curCh() && curCh().kind === 'video' && vid.paused && vid.getAttribute('src')) vid.play().catch(() => {}); });
+document.addEventListener('click', () => { initAudio(); userKick(); });
+// A click on the YouTube picture (e.g. its Skip Ad button) moves keyboard focus into YouTube's frame; take it back so the remote keys keep working.
+window.addEventListener('blur', () => setTimeout(() => {
+  const a = document.activeElement; if (!a || a.tagName !== 'IFRAME') return;
+  if (forcedMute) { forcedMute = false; applyVolume(); hideTuneIn(); } // the click inside the frame counts as permission for sound
+  a.blur(); window.focus();
+}, 600));
 let idleTimer = 0;
 document.addEventListener('mousemove', () => { $('remote').classList.remove('faded'); document.body.classList.remove('hide-cursor'); clearTimeout(idleTimer);
   idleTimer = setTimeout(() => { if (!$('remote').matches(':hover')) { $('remote').classList.add('faded'); document.body.classList.add('hide-cursor'); } }, 3000); });
@@ -1327,7 +1401,7 @@ ensureYT(); updateYtNote();
 applyView();
 requestAnimationFrame(frame);
 // test hooks (harmless): expose state for automated checks
-window.__retro = { YTS, get vitem() { return vstate.item; }, get channels() { return channels; }, get cur() { return cur; }, get gSel() { return gSel; }, programAt, showAt, tuneTo, parseLineup, classifyUrl, settings: S, get importData() { return importData; } };
+window.__retro = { YTS, get vstate() { return vstate; }, syncVideo, get vitem() { return vstate.item; }, get channels() { return channels; }, get cur() { return cur; }, get gSel() { return gSel; }, programAt, showAt, tuneTo, parseLineup, classifyUrl, settings: S, get importData() { return importData; } };
 })();
 </script>
 </body>
